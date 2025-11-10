@@ -53,6 +53,30 @@ if (process.env.RENDER_EXTERNAL_URL) {
 
 const app = express();
 
+let n8nReady = false;
+let proxyMiddleware = null;
+const n8nPaths = [
+  '/rest',
+  '/webhook',
+  '/api',
+  '/assets',
+  '/static',
+  '/login',
+  '/signup',
+  '/workflow',
+  '/workflows',
+  '/executions',
+  '/nodes',
+  '/credentials',
+  '/oauth2-credential',
+  '/oauth2',
+  '/me',
+  '/active',
+  '/settings',
+  '/push'
+];
+const isProxyReady = () => Boolean(n8nReady && proxyMiddleware);
+
 // Add request logging middleware to debug
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - Express received request`);
@@ -62,19 +86,25 @@ app.use((req, res, next) => {
 // Add JSON body parser
 app.use(express.json());
 
-// Root route handler to fix 404 error - MUST be registered before proxy
-app.all('/', (req, res) => {
-  console.log('Root route hit!', req.method, req.path); // Debug log
+// Root route handler: proxy to n8n UI when ready, otherwise expose startup status
+app.all('/', (req, res, next) => {
+  if (req.method === 'HEAD') {
+    console.log('Root HEAD request - reporting status', n8nReady ? 'ready' : 'starting');
+    res.setHeader('x-n8n-ready', n8nReady ? 'true' : 'false');
+    return res.sendStatus(200);
+  }
+
+  if (isProxyReady()) {
+    console.log('Root route forwarding to n8n UI');
+    return proxyMiddleware(req, res, next);
+  }
+
+  console.log('Root route hit before n8n is ready', req.method, req.path); // Debug log
   res.status(200).json({
-    status: 'success',
-    message: 'HR Notification Service is running',
+    status: 'starting',
+    message: 'n8n is starting up, please retry shortly',
     service: 'n8n',
-    version: '1.43.1',
-    endpoints: {
-      root: '/',
-      health: '/health',
-      n8n: '/'
-    }
+    ready: n8nReady
   });
 });
 
@@ -122,7 +152,7 @@ app.listen(EXPRESS_PORT, '0.0.0.0', () => {
     // Wait a bit for n8n to fully initialize, then set up proxy
     setTimeout(() => {
       // Create proxy middleware that explicitly excludes root and health
-      const proxy = createProxyMiddleware({
+      proxyMiddleware = createProxyMiddleware({
         target: `http://localhost:${N8N_INTERNAL_PORT}`,
         changeOrigin: true,
         ws: true, // Enable websocket proxying for n8n
@@ -144,10 +174,6 @@ app.listen(EXPRESS_PORT, '0.0.0.0', () => {
         }
       });
 
-      // Use path-based proxy - only proxy paths that start with /rest, /webhook, /api, etc.
-      // This ensures root and health are NEVER proxied
-      const n8nPaths = ['/rest', '/webhook', '/api', '/assets', '/static', '/login', '/signup', '/workflow', '/workflows', '/executions', '/nodes', '/credentials', '/oauth2-credential', '/oauth2', '/me', '/active', '/settings', '/push'];
-      
       app.use((req, res, next) => {
         const path = req.path;
         
@@ -161,8 +187,16 @@ app.listen(EXPRESS_PORT, '0.0.0.0', () => {
         const shouldProxy = n8nPaths.some(n8nPath => path.startsWith(n8nPath));
         
         if (shouldProxy) {
+          if (!isProxyReady()) {
+            console.log('n8n not ready yet - delaying proxy for:', path);
+            return res.status(503).json({
+              status: 'error',
+              message: 'n8n is still starting up, please try again shortly'
+            });
+          }
+
           console.log('Proxying to n8n:', path);
-          proxy(req, res, next);
+          return proxyMiddleware(req, res, next);
         } else {
           // For unknown paths, return 404 from Express (not n8n)
           console.log('Unknown path, returning 404:', path);
@@ -174,7 +208,8 @@ app.listen(EXPRESS_PORT, '0.0.0.0', () => {
         }
       });
       
-      console.log('Proxy middleware configured');
+      n8nReady = true;
+      console.log('Proxy middleware configured - n8n UI requests now served through Express');
     }, 3000); // Wait 3 seconds for n8n to fully start
   }).catch((error) => {
     console.error('❌ Error starting n8n:', error);
