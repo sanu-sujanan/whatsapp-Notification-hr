@@ -95,8 +95,8 @@ app.all('/', (req, res, next) => {
   }
 
   if (isProxyReady()) {
-    console.log('Root route forwarding to n8n UI');
-    return proxyMiddleware(req, res, next);
+    console.log('Root route redirecting to n8n login');
+    return res.redirect('/login');
   }
 
   console.log('Root route hit before n8n is ready', req.method, req.path); // Debug log
