@@ -55,26 +55,6 @@ const app = express();
 
 let n8nReady = false;
 let proxyMiddleware = null;
-const n8nPaths = [
-  '/rest',
-  '/webhook',
-  '/api',
-  '/assets',
-  '/static',
-  '/login',
-  '/signup',
-  '/workflow',
-  '/workflows',
-  '/executions',
-  '/nodes',
-  '/credentials',
-  '/oauth2-credential',
-  '/oauth2',
-  '/me',
-  '/active',
-  '/settings',
-  '/push'
-];
 const isProxyReady = () => Boolean(n8nReady && proxyMiddleware);
 
 // Add request logging middleware to debug
@@ -95,8 +75,8 @@ app.all('/', (req, res, next) => {
   }
 
   if (isProxyReady()) {
-    console.log('Root route redirecting to n8n login');
-    return res.redirect('/login');
+    console.log('Root route proxying to n8n');
+    return proxyMiddleware(req, res, next);
   }
 
   console.log('Root route hit before n8n is ready', req.method, req.path); // Debug log
@@ -177,35 +157,22 @@ app.listen(EXPRESS_PORT, '0.0.0.0', () => {
       app.use((req, res, next) => {
         const path = req.path;
         
-        // NEVER proxy root or health - these are handled by our routes above
-        if (path === '/' || path === '/health') {
+        // NEVER proxy routes handled by Express
+        if (path === '/' || path === '/health' || path === '/test') {
           console.log('Skipping proxy for:', path, '- handled by Express routes');
           return next(); // Let Express route handlers handle these
         }
         
-        // Only proxy known n8n paths
-        const shouldProxy = n8nPaths.some(n8nPath => path.startsWith(n8nPath));
-        
-        if (shouldProxy) {
-          if (!isProxyReady()) {
-            console.log('n8n not ready yet - delaying proxy for:', path);
-            return res.status(503).json({
-              status: 'error',
-              message: 'n8n is still starting up, please try again shortly'
-            });
-          }
-
-          console.log('Proxying to n8n:', path);
-          return proxyMiddleware(req, res, next);
-        } else {
-          // For unknown paths, return 404 from Express (not n8n)
-          console.log('Unknown path, returning 404:', path);
-          res.status(404).json({
+        if (!isProxyReady()) {
+          console.log('n8n not ready yet - delaying proxy for:', path);
+          return res.status(503).json({
             status: 'error',
-            message: 'Not Found',
-            path: path
+            message: 'n8n is still starting up, please try again shortly'
           });
         }
+
+        console.log('Proxying to n8n:', path);
+        return proxyMiddleware(req, res, next);
       });
       
       n8nReady = true;
